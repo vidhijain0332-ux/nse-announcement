@@ -1,43 +1,58 @@
 name: NSE Announcement Bot
+
 on:
   schedule:
-    - cron: '*/15 * * * *'   # runs every 15 minutes
-  workflow_dispatch:           # allows manual trigger from GitHub UI
-permissions:
-  contents: write              # needed to commit seen_ids.json back to repo
+    # Runs every hour during market + extended hours (IST = UTC+5:30)
+    # 3:00 AM UTC = 8:30 AM IST  (market open)
+    # 12:30 PM UTC = 6:00 PM IST (market close + buffer)
+    - cron: "0 3-13 * * 1-5"   # Every hour Mon-Fri, 8:30 AM to 6:30 PM IST
+    - cron: "30 3-12 * * 1-5"  # Every 30 min during market hours
+  workflow_dispatch:            # Allow manual trigger from GitHub UI
+
 jobs:
   run-bot:
-    timeout-minutes: 30
     runs-on: ubuntu-latest
+    timeout-minutes: 25         # Raised from 6 to 25 — gives Telegram phase full time
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run bot
-        env:
-          TELEGRAM_BOT_TOKEN:          ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHANNEL_RESULTS:    ${{ secrets.TELEGRAM_CHANNEL_RESULTS }}
-          TELEGRAM_CHANNEL_INVESTORS:  ${{ secrets.TELEGRAM_CHANNEL_INVESTORS }}
-          TELEGRAM_CHANNEL_ACQMERGER:  ${{ secrets.TELEGRAM_CHANNEL_ACQMERGER }}
-          TELEGRAM_CHANNEL_DEMERGER:   ${{ secrets.TELEGRAM_CHANNEL_DEMERGER }}
-          TELEGRAM_CHANNEL_MGMT:       ${{ secrets.TELEGRAM_CHANNEL_MGMT }}
-          TELEGRAM_CHANNEL_OTHERS:     ${{ secrets.TELEGRAM_CHANNEL_OTHERS }}
-          GOOGLE_SHEET_ID:             ${{ secrets.GOOGLE_SHEET_ID }}
-          GOOGLE_CREDS_JSON:           ${{ secrets.GOOGLE_CREDS_JSON }}
-        run: python main.py
+      # Restore seen_ids.json from cache so we never re-send old announcements
+      - name: Restore seen_ids cache
+        uses: actions/cache@v4
+        with:
+          path: seen_ids.json
+          key: seen-ids-${{ runner.os }}
+          restore-keys: |
+            seen-ids-
 
-      - name: Commit updated seen_ids.json
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add seen_ids.json
-          git diff --cached --quiet || git commit -m "chore: update seen_ids [skip ci]"
-          git push
+      - name: Run NSE bot
+        env:
+          TELEGRAM_BOT_TOKEN:         ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_RESULTS:   ${{ secrets.TELEGRAM_CHANNEL_RESULTS }}
+          TELEGRAM_CHANNEL_INVESTORS: ${{ secrets.TELEGRAM_CHANNEL_INVESTORS }}
+          TELEGRAM_CHANNEL_ACQMERGER: ${{ secrets.TELEGRAM_CHANNEL_ACQMERGER }}
+          TELEGRAM_CHANNEL_DEMERGER:  ${{ secrets.TELEGRAM_CHANNEL_DEMERGER }}
+          TELEGRAM_CHANNEL_MGMT:      ${{ secrets.TELEGRAM_CHANNEL_MGMT }}
+          TELEGRAM_CHANNEL_OTHERS:    ${{ secrets.TELEGRAM_CHANNEL_OTHERS }}
+          GOOGLE_SHEET_ID:            ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_CREDS_JSON:          ${{ secrets.GOOGLE_CREDS_JSON }}
+        run: python monitor.py
+
+      # Save updated seen_ids.json back to cache after successful run
+      - name: Save seen_ids cache
+        if: always()   # Save even if bot partially failed, to avoid duplicates
+        uses: actions/cache@v4
+        with:
+          path: seen_ids.json
+          key: seen-ids-${{ runner.os }}-${{ github.run_id }}
