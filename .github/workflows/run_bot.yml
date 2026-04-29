@@ -1,17 +1,13 @@
 name: NSE Announcement Bot
-
 on:
   schedule:
     - cron: '*/15 * * * *'   # runs every 15 minutes
   workflow_dispatch:           # allows manual trigger from GitHub UI
-
 permissions:
   contents: write              # needed to commit seen_ids.json back to repo
-
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -26,13 +22,15 @@ jobs:
 
       - name: Run bot
         env:
-          TELEGRAM_BOT_TOKEN:         ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHANNEL_RESULTS:   ${{ secrets.TELEGRAM_CHANNEL_RESULTS }}
-          TELEGRAM_CHANNEL_INVESTORS: ${{ secrets.TELEGRAM_CHANNEL_INVESTORS }}
-          TELEGRAM_CHANNEL_ACQMERGER: ${{ secrets.TELEGRAM_CHANNEL_ACQMERGER }}
-          TELEGRAM_CHANNEL_DEMERGER:  ${{ secrets.TELEGRAM_CHANNEL_DEMERGER }}
-          GOOGLE_SHEET_ID:            ${{ secrets.GOOGLE_SHEET_ID }}
-          GOOGLE_CREDS_JSON:          ${{ secrets.GOOGLE_CREDS_JSON }}
+          TELEGRAM_BOT_TOKEN:          ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_RESULTS:    ${{ secrets.TELEGRAM_CHANNEL_RESULTS }}
+          TELEGRAM_CHANNEL_INVESTORS:  ${{ secrets.TELEGRAM_CHANNEL_INVESTORS }}
+          TELEGRAM_CHANNEL_ACQMERGER:  ${{ secrets.TELEGRAM_CHANNEL_ACQMERGER }}
+          TELEGRAM_CHANNEL_DEMERGER:   ${{ secrets.TELEGRAM_CHANNEL_DEMERGER }}
+          TELEGRAM_CHANNEL_MGMT:       ${{ secrets.TELEGRAM_CHANNEL_MGMT }}
+          TELEGRAM_CHANNEL_OTHERS:     ${{ secrets.TELEGRAM_CHANNEL_OTHERS }}
+          GOOGLE_SHEET_ID:             ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_CREDS_JSON:           ${{ secrets.GOOGLE_CREDS_JSON }}
         run: python main.py
 
       - name: Commit updated seen_ids.json
