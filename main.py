@@ -801,7 +801,13 @@ def main():
     print(f"    Fetched: {len(announcements)} unique records")
 
     seen   = load_seen()
+    print(f"    Seen IDs loaded: {len(seen)}")
+
     ws_map = setup_sheets()
+    if ws_map:
+        print(f"  [SHEET] Connected — tabs: {list(ws_map.keys())}")
+    else:
+        print("  [SHEET] NO sheet connection — all writes skipped")
 
     # ── 10-day auto-cleanup (runs before new rows are added) ─
     if ws_map:
