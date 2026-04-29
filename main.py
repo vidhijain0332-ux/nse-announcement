@@ -194,13 +194,25 @@ def setup_sheets():
     header = ["Logged At", "Company", "Symbol", "Category",
               "Title", "Summary / Topic", "NSE Date", "Link"]
 
+    # Build a case-insensitive map of all existing tabs
+    existing = {ws.title.strip().lower(): ws for ws in wb.worksheets()}
+    print(f"  Existing tabs: {list(existing.keys())}")
+
     for tab in [SHEET_RESULTS, SHEET_INVESTORS, SHEET_ACQMERGER, SHEET_DEMERGER]:
-        try:
-            ws = wb.worksheet(tab)
-        except gspread.exceptions.WorksheetNotFound:
+        key = tab.strip().lower()
+        if key in existing:
+            # Tab exists — use it regardless of exact capitalisation
+            ws = existing[key]
+            # Rename to exact expected name if different
+            if ws.title != tab:
+                ws.update_title(tab)
+                print(f"  Renamed tab '{ws.title}' → '{tab}'")
+        else:
+            # Tab does not exist — create it
             ws = wb.add_worksheet(title=tab, rows=1000, cols=10)
             ws.append_row(header)
             ws.format("A1:H1", {"textFormat": {"bold": True}})
+            print(f"  Created tab '{tab}'")
         ws_map[tab] = ws
     return ws_map
 
