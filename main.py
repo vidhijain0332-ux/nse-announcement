@@ -8,7 +8,7 @@ from datetime import datetime
 
 # ── env vars ──────────────────────────────────────────────
 BOT_TOKEN         = os.environ["TELEGRAM_BOT_TOKEN"]
-CHANNEL_RESULTS   = os.environ["TELEGRAM_CHANNEL_RESULTS"]    # @channel or -100xxxxxxxxxx
+CHANNEL_RESULTS   = os.environ["TELEGRAM_CHANNEL_RESULTS"]
 CHANNEL_INVESTORS = os.environ["TELEGRAM_CHANNEL_INVESTORS"]
 CHANNEL_ACQMERGER = os.environ["TELEGRAM_CHANNEL_ACQMERGER"]
 CHANNEL_DEMERGER  = os.environ["TELEGRAM_CHANNEL_DEMERGER"]
@@ -22,61 +22,100 @@ SHEET_DEMERGER   = "Demerger"
 
 # ── category rules ────────────────────────────────────────
 RULES = {
-    "demerger": {
-        "keywords": ["demerger", "demerge", "spin-off", "spinoff", "hive off", "hive-off"],
-        "sheet":    SHEET_DEMERGER,
-        "channel":  None,
-        "emoji":    "🔀",
-        "label":    "Demerger"
+    "results": {
+        "keywords": [
+            "financial results", "quarterly results", "half yearly results",
+            "half year results", "annual results", "unaudited results",
+            "audited results", "unaudited financial", "audited financial",
+            "q1 results", "q2 results", "q3 results", "q4 results",
+            "standalone results", "consolidated results", "board meeting"
+        ],
+        "sheet":   SHEET_RESULTS,
+        "channel": None,
+        "emoji":   "📊",
+        "label":   "Financial Results"
+    },
+    "investors": {
+        "keywords": [
+            # meeting / event types
+            "investor meet", "investors meet", "analyst meet", "concall",
+            "con call", "conference call", "earnings call", "q&a", "q & a",
+            "investor day", "investor presentation", "analyst day",
+            "road show", "roadshow", "interaction with", "transcript",
+            "recording", "webinar", "investor briefing", "management meet",
+            "non-deal roadshow", "ndr",
+            # institutional / brokerage names
+            "jefferies", "clsa", "citi", "citigroup", "bofa",
+            "bank of america", "goldman sachs", "goldman", "jp morgan",
+            "jpmorgan", "morgan stanley", "bandhan small cap",
+            "hdfc mutual fund", "motilal oswal"
+        ],
+        "sheet":   SHEET_INVESTORS,
+        "channel": None,
+        "emoji":   "📞",
+        "label":   "Investors Meet / Concall"
     },
     "acqmerger": {
         "keywords": [
             "acquisition", "acquire", "takeover", "merger", "amalgamation",
             "scheme of arrangement", "slump sale", "business transfer",
-            "strategic investment", "open offer", "delisting"
+            "strategic investment", "open offer", "delisting",
+            "share purchase agreement", "spa", "binding term sheet",
+            "letter of intent", "loi", "due diligence"
         ],
-        "sheet":    SHEET_ACQMERGER,
-        "channel":  None,
-        "emoji":    "🤝",
-        "label":    "Acquisition / Merger"
+        "sheet":   SHEET_ACQMERGER,
+        "channel": None,
+        "emoji":   "🤝",
+        "label":   "Acquisition / Merger"
     },
-    "investors": {
+    "demerger": {
         "keywords": [
-            "investor meet", "investors meet", "analyst meet", "concall",
-            "conference call", "earnings call", "q&a", "q & a",
-            "investor day", "investor presentation", "analyst day",
-            "road show", "roadshow", "interaction with"
+            "demerger", "demerge", "spin-off", "spinoff",
+            "hive off", "hive-off", "carved out", "carve-out",
+            "separate listing", "composite scheme"
         ],
-        "sheet":    SHEET_INVESTORS,
-        "channel":  None,
-        "emoji":    "📞",
-        "label":    "Investors Meet / Concall"
+        "sheet":   SHEET_DEMERGER,
+        "channel": None,
+        "emoji":   "🔀",
+        "label":   "Demerger"
     },
-    "results": {
-        "keywords": [
-            "financial results", "quarterly results", "q1 results", "q2 results",
-            "q3 results", "q4 results", "annual results", "board meeting",
-            "unaudited results", "audited results", "half year results",
-            "standalone results", "consolidated results"
-        ],
-        "sheet":    SHEET_RESULTS,
-        "channel":  None,
-        "emoji":    "📊",
-        "label":    "Financial Results"
-    }
 }
 
-# Assign channels after env vars are loaded
-RULES["demerger"]["channel"]  = CHANNEL_DEMERGER
-RULES["acqmerger"]["channel"] = CHANNEL_ACQMERGER
-RULES["investors"]["channel"] = CHANNEL_INVESTORS
+# Assign channels
 RULES["results"]["channel"]   = CHANNEL_RESULTS
+RULES["investors"]["channel"] = CHANNEL_INVESTORS
+RULES["acqmerger"]["channel"] = CHANNEL_ACQMERGER
+RULES["demerger"]["channel"]  = CHANNEL_DEMERGER
 
 # ── cross-post pairs ──────────────────────────────────────
-# If an announcement matches BOTH categories → goes to BOTH sheets + BOTH channels
 CROSS_POST_PAIRS = [
-    ("acqmerger", "investors"),   # e.g. concall to discuss proposed acquisition
+    ("acqmerger", "investors"),
+    ("demerger",  "investors"),
 ]
+
+# ── investors meet sub-category detection ─────────────────
+INVESTOR_SUBCATEGORIES = [
+    ("Transcript",              ["transcript"]),
+    ("Recording",               ["recording", "webcast", "webinar"]),
+    ("Concall",                 ["concall", "con call", "conference call", "earnings call"]),
+    ("Analyst / Broker Meet",   ["analyst meet", "broker meet", "jefferies", "clsa", "citi",
+                                  "citigroup", "bofa", "bank of america", "goldman sachs",
+                                  "goldman", "jp morgan", "jpmorgan", "morgan stanley",
+                                  "bandhan small cap", "hdfc mutual fund", "motilal oswal"]),
+    ("Institutional Meet",      ["institutional", "fund manager", "ndr", "non-deal roadshow",
+                                  "investor briefing", "management meet", "management interaction"]),
+    ("Investor / Analyst Day",  ["investor day", "analyst day", "investor presentation",
+                                  "investor meet", "investors meet", "interaction with"]),
+    ("Roadshow",                ["road show", "roadshow"]),
+    ("Q&A Session",             ["q&a", "q & a"]),
+]
+
+def detect_investor_subcategory(text: str) -> str:
+    t = text.lower()
+    for label, kws in INVESTOR_SUBCATEGORIES:
+        if any(kw in t for kw in kws):
+            return label
+    return "Investors Meet"
 
 # ─────────────────────────────────────────────────────────
 
@@ -104,28 +143,40 @@ def classify(title, body):
 def detect_cross_post(matched):
     return any(a in matched and b in matched for a, b in CROSS_POST_PAIRS)
 
-def extract_topic(body):
-    body = (body or "").strip()
-    if not body or body.lower() in ("nan", "none", ""):
-        return None
-    return body[:200] + ("…" if len(body) > 200 else "")
+def extract_topic(title, body):
+    """Return full subject/topic — NO truncation."""
+    title = (title or "").strip()
+    body  = (body  or "").strip()
+    if body and body.lower() not in ("nan", "none", "") and body != title:
+        return f"{title} | {body}" if title else body
+    return title or None
 
-def format_message(ann, matched_cats, topic):
+def build_category_label(matched_cats, title, body):
+    """Build category label; investors gets specific sub-category."""
+    labels = []
+    text   = (title + " " + body).lower()
+    for cat in matched_cats:
+        if cat == "investors":
+            labels.append(detect_investor_subcategory(text))
+        else:
+            labels.append(RULES[cat]["label"])
+    return " + ".join(labels)
+
+def format_message(ann, matched_cats, topic, category_label):
     company  = ann.get("sm_name") or ann.get("symbol", "Unknown")
     symbol   = ann.get("symbol", "")
     title    = ann.get("desc", "")
     date_str = ann.get("an_dt", "")
     link     = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
-    labels   = " + ".join(RULES[c]["label"] for c in matched_cats)
     emojis   = " ".join(RULES[c]["emoji"] for c in matched_cats)
 
     msg = (
-        f"{emojis} *{labels}*\n\n"
+        f"{emojis} *{category_label}*\n\n"
         f"🏢 *{company}* (`{symbol}`)\n"
         f"📋 {title}\n"
     )
-    if topic:
-        msg += f"📝 _{topic}_\n"
+    if topic and topic != title:
+        msg += f"📝 {topic}\n"
     msg += f"📅 {date_str}\n🔗 [View on NSE]({link})"
     return msg
 
@@ -142,7 +193,7 @@ def send_to_channel(channel_id, msg):
         print(f"  Telegram error [{channel_id}]: {r.text}")
     time.sleep(0.4)
 
-def append_to_sheet(ws_map, sheet_name, ann, matched_cats, topic):
+def append_to_sheet(ws_map, sheet_name, ann, category_label, topic):
     ws = ws_map.get(sheet_name)
     if not ws:
         return
@@ -150,10 +201,11 @@ def append_to_sheet(ws_map, sheet_name, ann, matched_cats, topic):
     symbol   = ann.get("symbol", "")
     title    = ann.get("desc", "")
     date_str = ann.get("an_dt", "")
-    labels   = " + ".join(RULES[c]["label"] for c in matched_cats)
     now      = datetime.now().strftime("%Y-%m-%d %H:%M")
     link     = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
-    ws.append_row([now, company, symbol, labels, title, topic or "", date_str, link])
+    # Full subject — no truncation at all
+    full_topic = topic if topic else title
+    ws.append_row([now, company, symbol, category_label, title, full_topic, date_str, link])
 
 def fetch_nse():
     headers = {
@@ -163,8 +215,8 @@ def fetch_nse():
             "Chrome/120.0.0.0 Safari/537.36"
         ),
         "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.nseindia.com/",
-        "Accept": "application/json, text/plain, */*",
+        "Accept":          "application/json, text/plain, */*",
+        "Referer":         "https://www.nseindia.com/",
         "X-Requested-With": "XMLHttpRequest",
     }
     session = requests.Session()
@@ -174,7 +226,6 @@ def fetch_nse():
     resp = session.get(url, headers=headers, timeout=20)
     resp.raise_for_status()
     result = resp.json()
-    # NSE API returns either a list directly, or {"data": [...]}
     if isinstance(result, list):
         return result
     if isinstance(result, dict):
@@ -192,24 +243,22 @@ def setup_sheets():
     wb     = client.open_by_key(SHEET_ID)
     ws_map = {}
     header = ["Logged At", "Company", "Symbol", "Category",
-              "Title", "Summary / Topic", "NSE Date", "Link"]
+              "Title", "Full Subject / Topic", "NSE Date", "Link"]
 
-    # Build a case-insensitive map of all existing tabs
     existing = {ws.title.strip().lower(): ws for ws in wb.worksheets()}
     print(f"  Existing tabs: {list(existing.keys())}")
 
     for tab in [SHEET_RESULTS, SHEET_INVESTORS, SHEET_ACQMERGER, SHEET_DEMERGER]:
         key = tab.strip().lower()
         if key in existing:
-            # Tab exists — use it regardless of exact capitalisation
             ws = existing[key]
-            # Rename to exact expected name if different
             if ws.title != tab:
                 ws.update_title(tab)
-                print(f"  Renamed tab '{ws.title}' → '{tab}'")
+                print(f"  Renamed tab '{ws.title}' -> '{tab}'")
+            else:
+                print(f"  Found tab '{tab}'")
         else:
-            # Tab does not exist — create it
-            ws = wb.add_worksheet(title=tab, rows=1000, cols=10)
+            ws = wb.add_worksheet(title=tab, rows=2000, cols=10)
             ws.append_row(header)
             ws.format("A1:H1", {"textFormat": {"bold": True}})
             print(f"  Created tab '{tab}'")
@@ -219,7 +268,7 @@ def setup_sheets():
 # ── main ──────────────────────────────────────────────────
 
 def main():
-    print("Fetching NSE announcements…")
+    print("Fetching NSE announcements...")
     announcements = fetch_nse()
     print(f"  Got {len(announcements)} records")
 
@@ -233,20 +282,19 @@ def main():
             continue
 
         title = ann.get("desc", "")
-        body  = (ann.get("attchmntText") or
-                 ann.get("subject") or "")
+        body  = (ann.get("attchmntText") or ann.get("subject") or "")
 
         matched = classify(title, body)
-        new_seen.add(uid)   # mark seen regardless of category match
+        new_seen.add(uid)
 
         if not matched:
             continue
 
-        topic    = extract_topic(body)
-        is_cross = detect_cross_post(matched)
-        msg      = format_message(ann, matched, topic)
+        topic          = extract_topic(title, body)
+        is_cross       = detect_cross_post(matched)
+        category_label = build_category_label(matched, title, body)
+        msg            = format_message(ann, matched, topic, category_label)
 
-        # Collect unique channels and sheets (preserve order, dedupe)
         channels_to_notify = list(dict.fromkeys(RULES[c]["channel"] for c in matched))
         sheets_to_write    = list(dict.fromkeys(RULES[c]["sheet"]   for c in matched))
 
@@ -254,11 +302,10 @@ def main():
             send_to_channel(channel_id, msg)
 
         for sheet_name in sheets_to_write:
-            append_to_sheet(ws_map, sheet_name, ann, matched, topic)
+            append_to_sheet(ws_map, sheet_name, ann, category_label, topic)
 
-        tag        = " + ".join(RULES[c]["label"] for c in matched)
         cross_note = " [CROSS-POST]" if is_cross else ""
-        print(f" {cross_note}[{tag}] {ann.get('symbol','?')}")
+        print(f"  {cross_note}[{category_label}] {ann.get('symbol', '?')}")
 
     seen |= new_seen
     save_seen(seen)
