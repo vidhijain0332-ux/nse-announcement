@@ -12,7 +12,7 @@ CHANNEL_RESULTS    = os.environ["TELEGRAM_CHANNEL_RESULTS"]
 CHANNEL_INVESTORS  = os.environ["TELEGRAM_CHANNEL_INVESTORS"]
 CHANNEL_ACQMERGER  = os.environ["TELEGRAM_CHANNEL_ACQMERGER"]
 CHANNEL_DEMERGER   = os.environ["TELEGRAM_CHANNEL_DEMERGER"]
-CHANNEL_MGMT       = os.environ["TELEGRAM_CHANNEL_MGMT"]
+CHANNEL_MGMT       = os.environ.get("TELEGRAM_CHANNEL_MGMT", "")   # ← graceful fallback
 CHANNEL_OTHERS     = os.environ["TELEGRAM_CHANNEL_OTHERS"]
 SHEET_ID           = os.environ["GOOGLE_SHEET_ID"]
 
@@ -26,12 +26,8 @@ SHEET_OTHERS     = "Others"
 
 # ══════════════════════════════════════════════════════════
 # EXCLUSION FILTERS
-# Announcements whose title matches ANY of these phrases
-# are dropped entirely before classification.
-# This removes newspaper publications, routine filings, etc.
 # ══════════════════════════════════════════════════════════
 GLOBAL_EXCLUSIONS = [
-    # newspaper / advertisement filings
     "copy of newspaper",
     "newspaper publication",
     "newspaper advertisement",
@@ -42,63 +38,43 @@ GLOBAL_EXCLUSIONS = [
     "notice published in",
     "extract of newspaper",
     "newspaper cutting",
-    # routine boilerplate
     "corrigendum",
     "erratum",
     "loss of share certificate",
     "duplicate share certificate",
-    "sub-division of shares",           # unless you want splits — remove if needed
+    "sub-division of shares",
     "consolidation of shares",
     "transmission of shares",
-    "intimation of record date",         # pure record-date intimation (no result context)
+    "intimation of record date",
     "change in registrar",
     "appointment of registrar",
 ]
 
-# Per-category exclusions: if a title matches these, it is NOT
-# classified into that specific category (but may still match others).
 CATEGORY_EXCLUSIONS = {
     "acqmerger": [
-        # Financial results filings — not M&A deals
         "financial results", "quarterly results", "annual results",
         "unaudited results", "audited results", "half year results",
         "half yearly results", "standalone results", "consolidated results",
-        # Routine corporate actions that are not deals
         "newspaper", "advertisement",
         "dividend", "record date", "book closure",
         "agm", "annual general meeting",
         "egm", "extraordinary general meeting",
         "postal ballot", "voting result",
-        # Pure fundraising (not an acquisition)
         "rights issue", "public issue", "ipo", "fpo",
         "ncd", "non-convertible debenture", "commercial paper",
     ],
     "demerger": [
-        # Keep demerger exclusions minimal — only things that are
-        # definitively NOT demerger-related
         "newspaper", "advertisement",
         "financial results", "quarterly results", "annual results",
         "dividend",
     ],
-    "results": [
-        # board meeting guard handled separately in classify()
-    ],
-    "investors": [
-        "newspaper", "advertisement",
-        # Only exclude if the announcement is PURELY about results
-        # with zero investor-meeting context. Since classify() already
-        # requires an investor keyword to match, these exclusions only
-        # fire when BOTH an investor keyword AND a results phrase exist —
-        # which is exactly a cross-post scenario we DO want.
-        # So keep investors exclusion empty here and let cross-post logic handle it.
-    ],
+    "results": [],
+    "investors": [],
     "mgmt": [
         "newspaper", "advertisement",
     ],
 }
 
-# For "board meeting" to count as a Results trigger, at least one of
-# these must ALSO appear in the text (prevents false positives).
 RESULTS_BOARD_MEETING_REQUIRED = [
     "financial results", "quarterly results", "q1", "q2", "q3", "q4",
     "annual results", "half year", "half yearly", "audited", "unaudited",
@@ -106,7 +82,6 @@ RESULTS_BOARD_MEETING_REQUIRED = [
 
 # ══════════════════════════════════════════════════════════
 # CATEGORY RULES
-# Order matters for display only — classification is independent.
 # ══════════════════════════════════════════════════════════
 RULES = {
     "results": {
@@ -116,14 +91,13 @@ RULES = {
             "audited results", "unaudited financial", "audited financial",
             "q1 results", "q2 results", "q3 results", "q4 results",
             "standalone results", "consolidated results",
-            # board meeting is handled specially — see classify()
             "board meeting",
         ],
         "sheet":   SHEET_RESULTS,
         "channel": None,
         "emoji":   "📊",
         "label":   "Financial Results",
-        "priority": 4,   # lower number = shown first in cross-post label
+        "priority": 4,
     },
     "investors": {
         "keywords": [
@@ -145,13 +119,6 @@ RULES = {
         "priority": 3,
     },
     "acqmerger": {
-        # ── STRICT ACQ/MERGER KEYWORDS ────────────────────
-        # Rule: words that specifically and primarily indicate a
-        # corporate acquisition or merger event.
-        # Removed: "preferential allotment" (too common for fundraising),
-        # "loi" (3-letter match too risky), "spa" (same reason).
-        # "scheme of arrangement" is handled in classify() below —
-        # it only tags acqmerger when paired with an acq/merger keyword.
         "keywords": [
             "acquisition",
             "acquire",
@@ -187,14 +154,6 @@ RULES = {
         "priority": 2,
     },
     "demerger": {
-        # ── STRICT DEMERGER KEYWORDS ──────────────────────
-        # Rule: ONLY words that cannot appear in a non-demerger
-        # announcement. Generic legal terms (scheme of arrangement,
-        # NCLT, appointed date, transfer of undertaking) are
-        # intentionally excluded — they fire on mergers, dividends,
-        # capital reductions, AGMs, etc. and flood the sheet.
-        # The word "demerger" / "demerge" / "demerged" appearing
-        # in the title IS sufficient signal — NSE titles are concise.
         "keywords": [
             "demerger",
             "demerge",
@@ -209,9 +168,9 @@ RULES = {
             "carve-out",
             "carve out",
             "carved out",
-            "scheme of demerger",       # explicitly says demerger
-            "demerger ratio",           # only used in demerger filings
-            "demerger consideration",   # only used in demerger filings
+            "scheme of demerger",
+            "demerger ratio",
+            "demerger consideration",
             "composite scheme of demerger",
         ],
         "sheet":   SHEET_DEMERGER,
@@ -222,7 +181,6 @@ RULES = {
     },
     "mgmt": {
         "keywords": [
-            # director / KMP changes
             "change in directorate",
             "change in director",
             "change in management",
@@ -238,7 +196,7 @@ RULES = {
             "appointment of cfo",
             "resignation of cfo",
             "appointment of coo",
-            "appointment of cs",         # company secretary
+            "appointment of cs",
             "appointment of company secretary",
             "resignation of company secretary",
             "change in key managerial",
@@ -259,7 +217,7 @@ RULES = {
             "change in chief executive",
             "change in chief financial",
             "change in managing director",
-            "promoter reclassification",   # ownership/control shift
+            "promoter reclassification",
         ],
         "sheet":   SHEET_MGMT,
         "channel": None,
@@ -296,6 +254,23 @@ INVESTOR_SUBCATEGORIES = [
                                  "investor meet", "investors meet", "interaction with"]),
     ("Roadshow",               ["road show", "roadshow"]),
     ("Q&A Session",            ["q&a", "q & a"]),
+]
+
+# ── acquisition & merger sub-categories ───────────────────
+ACQ_SUBCATEGORIES = [
+    ("Open Offer / Takeover",      ["open offer", "takeover", "substantial acquisition",
+                                     "creeping acquisition"]),
+    ("Merger / Amalgamation",      ["merger", "amalgamation", "amalgamate", "amalgamated"]),
+    ("Acquisition",                ["acquisition", "acquire", "acquired", "acquiring",
+                                     "acquirer", "business acquisition", "strategic acquisition",
+                                     "promoter acquisition"]),
+    ("Slump Sale / Business Transfer", ["slump sale", "business transfer agreement"]),
+    ("Strategic Investment",       ["strategic investment"]),
+    ("Share Purchase Agreement",   ["share purchase agreement", "binding term sheet",
+                                     "definitive agreement"]),
+    ("Letter of Intent / Due Diligence", ["letter of intent", "due diligence"]),
+    ("Change in Control",          ["change in control"]),
+    ("Delisting",                  ["delisting"]),
 ]
 
 KNOWN_INVESTORS = [
@@ -346,16 +321,10 @@ def parse_nse_date(date_str):
     return None
 
 def is_excluded_globally(title: str) -> bool:
-    """Return True if the announcement should be dropped entirely."""
     t = title.lower()
     return any(ex in t for ex in GLOBAL_EXCLUSIONS)
 
 def is_first_disclosure(title: str) -> bool:
-    """
-    Heuristic: return True if this looks like an original disclosure
-    rather than a follow-up / update.
-    We prefer announcements that do NOT contain these follow-up markers.
-    """
     t = title.lower()
     follow_up_markers = [
         "update on", "further update", "outcome of",
@@ -367,25 +336,9 @@ def is_first_disclosure(title: str) -> bool:
     return not any(m in t for m in follow_up_markers)
 
 def classify(title: str, body: str) -> list:
-    """
-    Returns list of matched category keys.
-
-    Logic:
-    - Each category matches independently via its keyword list.
-    - Per-category exclusions prevent cross-contamination.
-    - Special guard for "board meeting": only a Results hit when
-      accompanied by a results-context word.
-    - "merger" substring guard: "demerger" contains "merger" so we
-      check that a demerger word is NOT present before tagging acqmerger
-      on a merger-only match.
-    - If a title has both a genuine acq keyword AND results context,
-      it cross-posts to both (e.g. "acquisition update in Q1 results").
-    """
     text = (title + " " + body).lower()
     matched = []
 
-    # Pre-compute whether text contains a demerger-specific word
-    # (used to guard against "merger" substring in "demerger")
     has_demerger_word = any(kw in text for kw in [
         "demerger", "demerge", "demerged", "demerging",
         "spin-off", "spinoff", "spin off",
@@ -395,16 +348,11 @@ def classify(title: str, body: str) -> list:
     ])
 
     for cat, rule in RULES.items():
-        # Must match at least one keyword
         if not any(kw in text for kw in rule["keywords"]):
             continue
 
-        # Per-category exclusions
         excl = CATEGORY_EXCLUSIONS.get(cat, [])
         if any(ex in text for ex in excl):
-            # Special case: acqmerger exclusion has "financial results" etc.
-            # But if there is ALSO a genuine non-merger acq keyword present
-            # (acquisition, takeover, open offer etc.), still allow acqmerger.
             if cat == "acqmerger":
                 strong_acq_kws = [
                     "acquisition", "acquire", "acquired", "acquiring", "acquirer",
@@ -415,17 +363,13 @@ def classify(title: str, body: str) -> list:
                     "definitive agreement", "letter of intent",
                 ]
                 if any(kw in text for kw in strong_acq_kws):
-                    pass  # override the exclusion — genuine acquisition
+                    pass
                 else:
                     continue
             else:
                 continue
 
-        # ── "merger" substring guard ──────────────────────
-        # "demerger" contains "merger". Without this guard, a title like
-        # "Demerger of XYZ division" would also fire acqmerger.
         if cat == "acqmerger" and has_demerger_word:
-            # Only flag acqmerger if there is a non-merger acq keyword too
             non_merger_acq_kws = [
                 "acquisition", "acquire", "acquired", "acquiring", "acquirer",
                 "takeover", "open offer", "slump sale", "delisting",
@@ -436,9 +380,8 @@ def classify(title: str, body: str) -> list:
                 "amalgamation", "amalgamate", "amalgamated",
             ]
             if not any(kw in text for kw in non_merger_acq_kws):
-                continue  # pure demerger — don't also tag as acqmerger
+                continue
 
-        # ── board meeting guard ───────────────────────────
         if cat == "results":
             other_results_kw = [kw for kw in rule["keywords"] if kw != "board meeting"]
             has_other = any(kw in text for kw in other_results_kw)
@@ -468,19 +411,31 @@ def detect_investor_subcategory(text: str) -> str:
             return label
     return "Investors Meet"
 
+def detect_acq_subcategory(text: str) -> str:
+    """
+    Returns the most specific sub-category label for an acqmerger announcement.
+    Priority is determined by list order in ACQ_SUBCATEGORIES.
+    """
+    t = text.lower()
+    for label, kws in ACQ_SUBCATEGORIES:
+        if any(kw in t for kw in kws):
+            return label
+    return "Acquisition / Merger"   # fallback
+
 def extract_investor_name(title: str, body: str) -> str:
     text = (title + " " + body).lower()
     found = [name for name in KNOWN_INVESTORS if name.lower() in text]
     return ", ".join(found) if found else ""
 
 def build_category_label(matched_cats: list, title: str, body: str) -> str:
-    # Sort by priority so higher-priority categories appear first
     sorted_cats = sorted(matched_cats, key=lambda c: RULES[c]["priority"])
     text = (title + " " + body).lower()
     labels = []
     for cat in sorted_cats:
         if cat == "investors":
             labels.append(detect_investor_subcategory(text))
+        elif cat == "acqmerger":
+            labels.append(detect_acq_subcategory(text))   # ← sub-category for M&A
         else:
             labels.append(RULES[cat]["label"])
     return " + ".join(labels)
@@ -546,6 +501,9 @@ def format_others_message(ann: dict, nse_link: str, screener_link: str) -> str:
     )
 
 def send_to_channel(channel_id: str, msg: str):
+    if not channel_id:
+        print("  [SKIP] Channel ID is empty — skipping send")
+        return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id":    channel_id,
@@ -608,10 +566,6 @@ def fetch_nse_page(session, headers: dict, from_date: str, to_date: str, page: i
     return [], 0
 
 def fetch_nse() -> list:
-    """
-    Fetch all announcements from the last 24 hours across all pages.
-    Returns deduplicated list sorted with FIRST disclosures at the top.
-    """
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -648,7 +602,6 @@ def fetch_nse() -> list:
         page += 1
         time.sleep(1)
 
-    # Deduplicate within batch
     seen_uids = set()
     unique = []
     for ann in all_data:
@@ -657,7 +610,6 @@ def fetch_nse() -> list:
             seen_uids.add(uid)
             unique.append(ann)
 
-    # Sort: first disclosures first, then by date descending
     def sort_key(ann):
         first = 0 if is_first_disclosure(ann.get("desc", "")) else 1
         dt    = parse_nse_date(ann.get("an_dt", "")) or datetime.min
@@ -758,7 +710,6 @@ def main():
         body  = (ann.get("attchmntText") or ann.get("subject") or "")
         new_seen.add(uid)
 
-        # ── global exclusion (newspapers, boilerplate) ────
         if is_excluded_globally(title):
             counts["excluded"] += 1
             print(f"  [EXCLUDED] {ann.get('symbol','?')} — {title[:60]}")
@@ -767,7 +718,6 @@ def main():
         matched  = classify(title, body)
         is_first = is_first_disclosure(title)
 
-        # ── OTHERS: did not match any category ────────────
         if not matched:
             counts["others"] += 1
             nse_link      = build_nse_link(ann)
@@ -780,7 +730,6 @@ def main():
             processed += 1
             continue
 
-        # ── normal categorised announcement ──────────────
         topic          = extract_topic(title, body)
         is_cross       = detect_cross_post(matched)
         category_label = build_category_label(matched, title, body)
