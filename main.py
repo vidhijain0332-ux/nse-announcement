@@ -164,14 +164,22 @@ def fetch_nse():
         ),
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://www.nseindia.com/",
+        "Accept": "application/json, text/plain, */*",
+        "X-Requested-With": "XMLHttpRequest",
     }
     session = requests.Session()
     session.get("https://www.nseindia.com", headers=headers, timeout=15)
-    time.sleep(1)
+    time.sleep(2)
     url  = "https://www.nseindia.com/api/corporate-announcements?index=equities"
     resp = session.get(url, headers=headers, timeout=20)
     resp.raise_for_status()
-    return resp.json().get("data", [])
+    result = resp.json()
+    # NSE API returns either a list directly, or {"data": [...]}
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict):
+        return result.get("data", [])
+    return []
 
 def setup_sheets():
     scope = [
