@@ -106,15 +106,27 @@ INVESTOR_SUBCATEGORIES = [
     ("Q&A Session",            ["q&a", "q & a"]),
 ]
 
-# ── known investor / institution names to extract ─────────
+# ── known investor names to extract ───────────────────────
 KNOWN_INVESTORS = [
     "Jefferies", "CLSA", "Citi", "Citigroup", "BofA", "Bank of America",
     "Goldman Sachs", "JP Morgan", "JPMorgan", "Morgan Stanley",
     "Bandhan Small Cap", "HDFC Mutual Fund", "Motilal Oswal",
-    "Nomura", "UBS", "Macquarie", "Credit Suisse", "Deutsche Bank",
-    "Bernstein", "HSBC", "Kotak", "Axis Capital", "ICICI Securities",
-    "Edelweiss", "Nuvama", "Emkay", "Ambit", "Systematix",
-    "Prabhudas Lilladher", "Sharekhan", "Angel One", "Nirmal Bang",
+    "Nomura", "UBS", "Macquarie", "Deutsche Bank", "Bernstein",
+    "HSBC", "Kotak", "Axis Capital", "ICICI Securities", "Edelweiss",
+    "Nuvama", "Emkay", "Ambit", "Systematix", "Prabhudas Lilladher",
+    "Sharekhan", "Angel One", "Nirmal Bang",
+]
+
+# ── NSE date formats ───────────────────────────────────────
+NSE_DATE_FORMATS = [
+    "%d-%b-%Y %H:%M:%S",
+    "%d-%b-%Y %H:%M",
+    "%d-%b-%Y",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%d",
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y",
 ]
 
 # ─────────────────────────────────────────────────────────
@@ -135,6 +147,28 @@ def make_uid(ann):
             ann.get("symbol", "") + "|" +
             ann.get("desc", "")[:80])
 
+def parse_nse_date(date_str):
+    """Try all known NSE date formats. Returns datetime or None."""
+    if not date_str:
+        return None
+    date_str = date_str.strip()
+    for fmt in NSE_DATE_FORMATS:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+    return None
+
+def is_within_24h(ann):
+    """
+    Return True if announcement is within last 24 hours.
+    If date cannot be parsed, INCLUDE it (don't drop it).
+    """
+    dt = parse_nse_date(ann.get("an_dt", ""))
+    if dt is None:
+        return True   # unknown date → include to be safe
+    return dt >= datetime.now() - timedelta(hours=24)
+
 def classify(title, body):
     text = (title + " " + body).lower()
     return [cat for cat, rule in RULES.items()
@@ -144,30 +178,24 @@ def detect_cross_post(matched):
     return any(a in matched and b in matched for a, b in CROSS_POST_PAIRS)
 
 def extract_topic(title, body):
-    """Return full subject/topic — NO truncation."""
+    """Return full subject/topic — NO truncation at all."""
     title = (title or "").strip()
     body  = (body  or "").strip()
     if body and body.lower() not in ("nan", "none", "") and body != title:
         return f"{title} | {body}" if title else body
     return title or None
 
-def detect_investor_subcategory(text: str) -> str:
+def detect_investor_subcategory(text):
     t = text.lower()
     for label, kws in INVESTOR_SUBCATEGORIES:
         if any(kw in t for kw in kws):
             return label
     return "Investors Meet"
 
-def extract_investor_name(title: str, body: str) -> str:
-    """
-    Scan title + body for known investor/institution names.
-    Returns comma-separated matches, or empty string if none found.
-    """
+def extract_investor_name(title, body):
+    """Scan for known institution names and return them comma-separated."""
     text = (title + " " + body).lower()
-    found = []
-    for name in KNOWN_INVESTORS:
-        if name.lower() in text:
-            found.append(name)
+    found = [name for name in KNOWN_INVESTORS if name.lower() in text]
     return ", ".join(found) if found else ""
 
 def build_category_label(matched_cats, title, body):
@@ -181,48 +209,26 @@ def build_category_label(matched_cats, title, body):
     return " + ".join(labels)
 
 def build_nse_link(ann):
-    """
-    Build the direct NSE circular/attachment URL for this announcement.
-    NSE uses the 'attchmntFile' field for the PDF path.
-    Falls back to the filtered announcements page for that symbol.
-    """
+    """Direct PDF/circular link from attchmntFile, else symbol page."""
     attachment = ann.get("attchmntFile", "")
     symbol     = ann.get("symbol", "")
-
     if attachment:
-        # attachment paths are like: /Archives/cm/.../.pdf
         if attachment.startswith("http"):
             return attachment
         return f"https://www.nseindia.com{attachment}"
-
-    # Fallback: symbol-specific announcements page
     if symbol:
         return (f"https://www.nseindia.com/get-quotes/equity?"
                 f"symbol={symbol}#corporate-announcements")
-
     return "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
 
 def build_screener_link(ann):
-    """Build Screener.in link for the company's announcements page."""
     symbol = ann.get("symbol", "")
     if symbol:
         return f"https://www.screener.in/company/{symbol}/announcements/"
     return "https://www.screener.in"
 
-def is_within_24h(ann):
-    """Return True if the announcement date is within the last 24 hours."""
-    date_str = ann.get("an_dt", "")
-    if not date_str:
-        return True  # include if date unknown
-    for fmt in ("%d-%b-%Y %H:%M:%S", "%d-%b-%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-        try:
-            ann_dt = datetime.strptime(date_str.strip(), fmt)
-            return ann_dt >= datetime.now() - timedelta(hours=24)
-        except ValueError:
-            continue
-    return True  # include if unparseable
-
-def format_message(ann, matched_cats, topic, category_label, nse_link, screener_link, investor_name):
+def format_message(ann, matched_cats, topic, category_label,
+                   nse_link, screener_link, investor_name):
     company  = ann.get("sm_name") or ann.get("symbol", "Unknown")
     symbol   = ann.get("symbol", "")
     title    = ann.get("desc", "")
@@ -263,22 +269,46 @@ def append_to_sheet(ws_map, sheet_name, ann, category_label, topic,
     ws = ws_map.get(sheet_name)
     if not ws:
         return
-    company  = ann.get("sm_name") or ann.get("symbol", "Unknown")
-    symbol   = ann.get("symbol", "")
-    title    = ann.get("desc", "")
-    date_str = ann.get("an_dt", "")
-    now      = datetime.now().strftime("%Y-%m-%d %H:%M")
+    company    = ann.get("sm_name") or ann.get("symbol", "Unknown")
+    symbol     = ann.get("symbol", "")
+    title      = ann.get("desc", "")
+    date_str   = ann.get("an_dt", "")
+    now        = datetime.now().strftime("%Y-%m-%d %H:%M")
     full_topic = topic if topic else title
 
     if sheet_name == SHEET_INVESTORS:
-        # Extra "Investor Name" column for this sheet
         ws.append_row([now, company, symbol, category_label, title,
                        full_topic, investor_name, date_str, nse_link, screener_link])
     else:
         ws.append_row([now, company, symbol, category_label, title,
                        full_topic, date_str, nse_link, screener_link])
 
+def fetch_nse_page(session, headers, from_date, to_date, page):
+    """Fetch one page of NSE announcements."""
+    url = (
+        f"https://www.nseindia.com/api/corporate-announcements"
+        f"?index=equities"
+        f"&from_date={from_date}&to_date={to_date}"
+        f"&page={page}"
+    )
+    resp = session.get(url, headers=headers, timeout=20)
+    if not resp.ok:
+        print(f"  Page {page} HTTP {resp.status_code} — stopping pagination")
+        return [], 0
+    result = resp.json()
+    if isinstance(result, list):
+        return result, len(result)
+    if isinstance(result, dict):
+        data  = result.get("data", [])
+        total = result.get("total", len(data))
+        return data, total
+    return [], 0
+
 def fetch_nse():
+    """
+    Fetch ALL announcements from the last 24 hours by paginating
+    through the NSE corporate announcements API.
+    """
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -293,15 +323,51 @@ def fetch_nse():
     session = requests.Session()
     session.get("https://www.nseindia.com", headers=headers, timeout=15)
     time.sleep(2)
-    url  = "https://www.nseindia.com/api/corporate-announcements?index=equities"
-    resp = session.get(url, headers=headers, timeout=20)
-    resp.raise_for_status()
-    result = resp.json()
-    if isinstance(result, list):
-        return result
-    if isinstance(result, dict):
-        return result.get("data", [])
-    return []
+
+    # Date range: last 24 hours
+    now       = datetime.now()
+    yesterday = now - timedelta(hours=24)
+    from_date = yesterday.strftime("%d-%m-%Y")
+    to_date   = now.strftime("%d-%m-%Y")
+
+    print(f"  Fetching announcements from {from_date} to {to_date}")
+
+    all_announcements = []
+    page = 1
+
+    while True:
+        print(f"  Fetching page {page}...")
+        data, total = fetch_nse_page(session, headers, from_date, to_date, page)
+
+        if not data:
+            print(f"  No data on page {page} — done paginating")
+            break
+
+        all_announcements.extend(data)
+        print(f"  Page {page}: got {len(data)} records (total so far: {len(all_announcements)})")
+
+        # Stop if we have fetched all available records
+        if len(all_announcements) >= total and total > 0:
+            print(f"  Fetched all {total} available records")
+            break
+
+        # Stop if page returned fewer than expected (last page)
+        if len(data) < 10:
+            break
+
+        page += 1
+        time.sleep(1)   # be polite between page requests
+
+    # Deduplicate by uid within the fetched batch
+    seen_in_batch = set()
+    unique = []
+    for ann in all_announcements:
+        uid = make_uid(ann)
+        if uid not in seen_in_batch:
+            seen_in_batch.add(uid)
+            unique.append(ann)
+
+    return unique
 
 def setup_sheets():
     scope = [
@@ -314,11 +380,10 @@ def setup_sheets():
     wb     = client.open_by_key(SHEET_ID)
     ws_map = {}
 
-    # Standard header for Results, Acq&Merger, Demerger
     std_header = ["Logged At", "Company", "Symbol", "Category",
-                  "Title", "Full Subject / Topic", "NSE Date", "NSE Circular Link", "Screener Link"]
+                  "Title", "Full Subject / Topic",
+                  "NSE Date", "NSE Circular Link", "Screener Link"]
 
-    # Extended header for Investors Meet (extra Investor Name column)
     inv_header = ["Logged At", "Company", "Symbol", "Category",
                   "Title", "Full Subject / Topic", "Investor Name",
                   "NSE Date", "NSE Circular Link", "Screener Link"]
@@ -348,28 +413,25 @@ def setup_sheets():
 # ── main ──────────────────────────────────────────────────
 
 def main():
-    print("Fetching NSE announcements...")
+    print("Fetching NSE announcements (last 24 hours, all pages)...")
     announcements = fetch_nse()
-    print(f"  Got {len(announcements)} total records")
-
-    # Filter to last 24 hours only
-    announcements = [a for a in announcements if is_within_24h(a)]
-    print(f"  {len(announcements)} records within last 24 hours")
+    print(f"  Total unique announcements fetched: {len(announcements)}")
 
     seen     = load_seen()
     ws_map   = setup_sheets()
     new_seen = set()
+    processed = 0
 
     for ann in announcements:
         uid = make_uid(ann)
         if uid in seen:
-            continue
+            continue   # already sent in a previous run
 
         title = ann.get("desc", "")
         body  = (ann.get("attchmntText") or ann.get("subject") or "")
 
         matched = classify(title, body)
-        new_seen.add(uid)
+        new_seen.add(uid)   # always mark seen
 
         if not matched:
             continue
@@ -394,12 +456,13 @@ def main():
                             nse_link, screener_link, investor_name)
 
         cross_note = " [CROSS-POST]" if is_cross else ""
-        inv_note   = f" | Investor: {investor_name}" if investor_name else ""
-        print(f"  {cross_note}[{category_label}]{inv_note} {ann.get('symbol', '?')}")
+        inv_note   = f" | {investor_name}" if investor_name else ""
+        print(f"  {cross_note}[{category_label}]{inv_note} — {ann.get('symbol','?')}")
+        processed += 1
 
     seen |= new_seen
     save_seen(seen)
-    print(f"Done. {len(new_seen)} new IDs recorded.")
+    print(f"\nDone. {processed} new announcements sent. {len(new_seen)} total IDs recorded this run.")
 
 if __name__ == "__main__":
     main()
