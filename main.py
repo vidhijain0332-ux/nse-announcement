@@ -7,14 +7,29 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, timedelta
 
 # ── env vars ──────────────────────────────────────────────
-BOT_TOKEN          = os.environ["TELEGRAM_BOT_TOKEN"]
-CHANNEL_RESULTS    = os.environ["TELEGRAM_CHANNEL_RESULTS"]
-CHANNEL_INVESTORS  = os.environ["TELEGRAM_CHANNEL_INVESTORS"]
-CHANNEL_ACQMERGER  = os.environ["TELEGRAM_CHANNEL_ACQMERGER"]
-CHANNEL_DEMERGER   = os.environ["TELEGRAM_CHANNEL_DEMERGER"]
-CHANNEL_MGMT       = os.environ.get("TELEGRAM_CHANNEL_MGMT", "")   # ← graceful fallback
-CHANNEL_OTHERS     = os.environ["TELEGRAM_CHANNEL_OTHERS"]
-SHEET_ID           = os.environ["GOOGLE_SHEET_ID"]
+BOT_TOKEN          = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+CHANNEL_RESULTS    = os.environ.get("TELEGRAM_CHANNEL_RESULTS", "")
+CHANNEL_INVESTORS  = os.environ.get("TELEGRAM_CHANNEL_INVESTORS", "")
+CHANNEL_ACQMERGER  = os.environ.get("TELEGRAM_CHANNEL_ACQMERGER", "")
+CHANNEL_DEMERGER   = os.environ.get("TELEGRAM_CHANNEL_DEMERGER", "")
+CHANNEL_MGMT       = os.environ.get("TELEGRAM_CHANNEL_MGMT", "")
+CHANNEL_OTHERS     = os.environ.get("TELEGRAM_CHANNEL_OTHERS", "")
+SHEET_ID           = os.environ.get("GOOGLE_SHEET_ID", "")
+
+# ── warn loudly about any missing secrets at startup ──────
+_REQUIRED = {
+    "TELEGRAM_BOT_TOKEN":        BOT_TOKEN,
+    "TELEGRAM_CHANNEL_RESULTS":  CHANNEL_RESULTS,
+    "TELEGRAM_CHANNEL_INVESTORS":CHANNEL_INVESTORS,
+    "TELEGRAM_CHANNEL_ACQMERGER":CHANNEL_ACQMERGER,
+    "TELEGRAM_CHANNEL_DEMERGER": CHANNEL_DEMERGER,
+    "TELEGRAM_CHANNEL_MGMT":     CHANNEL_MGMT,
+    "TELEGRAM_CHANNEL_OTHERS":   CHANNEL_OTHERS,
+    "GOOGLE_SHEET_ID":           SHEET_ID,
+}
+for _k, _v in _REQUIRED.items():
+    if not _v:
+        print(f"  ⚠️  WARNING: secret '{_k}' is not set — related features will be skipped")
 
 # ── sheet tab names ────────────────────────────────────────
 SHEET_RESULTS    = "Results"
@@ -516,30 +531,111 @@ def send_to_channel(channel_id: str, msg: str):
         print(f"  Telegram error [{channel_id}]: {r.text}")
     time.sleep(0.4)
 
+def safe_append(ws, row: list) -> bool:
+    """Append a row with 3 retries on quota / server errors."""
+    for attempt in range(1, 4):
+        try:
+            ws.append_row(row, value_input_option="USER_ENTERED")
+            return True
+        except gspread.exceptions.APIError as e:
+            code = e.response.status_code if hasattr(e, "response") else 0
+            if code == 429 or code >= 500:
+                wait = 15 * attempt
+                print(f"  [SHEET] API {code} — retrying in {wait}s (attempt {attempt}/3)")
+                time.sleep(wait)
+            else:
+                print(f"  [SHEET] APIError {code}: {e}")
+                return False
+        except Exception as e:
+            print(f"  [SHEET] Unexpected error: {e}")
+            return False
+    print("  [SHEET] Failed after 3 attempts")
+    return False
+
 def append_to_sheet(ws_map, sheet_name: str, ann: dict, category_label: str,
                     topic, nse_link: str, screener_link: str,
                     investor_name: str, is_first: bool):
     ws = ws_map.get(sheet_name)
     if not ws:
+        print(f"  [SHEET] WARNING: '{sheet_name}' not in ws_map — skipping")
         return
-    company   = ann.get("sm_name") or ann.get("symbol", "Unknown")
-    symbol    = ann.get("symbol", "")
-    title     = ann.get("desc", "")
-    date_str  = ann.get("an_dt", "")
-    now       = datetime.now().strftime("%Y-%m-%d %H:%M")
+    company    = ann.get("sm_name") or ann.get("symbol", "Unknown")
+    symbol     = ann.get("symbol", "")
+    title      = ann.get("desc", "")
+    date_str   = ann.get("an_dt", "")
+    now        = datetime.now().strftime("%Y-%m-%d %H:%M")
     full_topic = topic if topic else title
     first_flag = "YES" if is_first else ""
 
     if sheet_name == SHEET_INVESTORS:
-        ws.append_row([now, company, symbol, category_label, title,
-                       full_topic, investor_name, date_str,
-                       first_flag, nse_link, screener_link])
+        row = [now, company, symbol, category_label, title,
+               full_topic, investor_name, date_str,
+               first_flag, nse_link, screener_link]
     elif sheet_name == SHEET_OTHERS:
-        ws.append_row([now, company, symbol, title,
-                       date_str, nse_link, screener_link])
+        # Fixed: now includes Title + Full Subject/Topic columns
+        row = [now, company, symbol, title,
+               full_topic, date_str, nse_link, screener_link]
     else:
-        ws.append_row([now, company, symbol, category_label, title,
-                       full_topic, date_str, first_flag, nse_link, screener_link])
+        row = [now, company, symbol, category_label, title,
+               full_topic, date_str, first_flag, nse_link, screener_link]
+
+    ok = safe_append(ws, row)
+    if ok:
+        print(f"  [SHEET] ✅ Written to '{sheet_name}'")
+    else:
+        print(f"  [SHEET] ❌ Failed to write to '{sheet_name}'")
+
+# ─────────────────────────────────────────────────────────
+# AUTO-CLEANUP: delete rows older than 10 days
+# ─────────────────────────────────────────────────────────
+
+CLEANUP_DAYS = 10
+
+def cleanup_old_rows(ws_map: dict):
+    """
+    Runs once per bot execution. Deletes any row in every sheet
+    where column A (Logged At = YYYY-MM-DD HH:MM) is older than
+    CLEANUP_DAYS. Rows are deleted bottom-up so indices stay valid.
+    """
+    cutoff = datetime.now() - timedelta(days=CLEANUP_DAYS)
+    cutoff_str = cutoff.strftime("%Y-%m-%d")
+    print(f"\n[CLEANUP] Deleting rows logged before {cutoff_str} (>{CLEANUP_DAYS} days old)…")
+
+    for sheet_name, ws in ws_map.items():
+        try:
+            all_rows = ws.get_all_values()
+        except Exception as e:
+            print(f"  [CLEANUP] Could not read '{sheet_name}': {e}")
+            continue
+
+        if len(all_rows) <= 1:
+            print(f"  [CLEANUP] '{sheet_name}': empty — skipping")
+            continue
+
+        to_delete = []
+        for i, row in enumerate(all_rows[1:], start=2):   # row 1 = header
+            if not row or not row[0].strip():
+                continue
+            try:
+                logged_at = datetime.strptime(row[0].strip(), "%Y-%m-%d %H:%M")
+                if logged_at < cutoff:
+                    to_delete.append(i)
+            except ValueError:
+                continue   # unrecognised date format — leave it
+
+        if not to_delete:
+            print(f"  [CLEANUP] '{sheet_name}': nothing to delete")
+            continue
+
+        # Delete bottom-up so earlier row indices stay valid
+        for row_idx in reversed(to_delete):
+            try:
+                ws.delete_rows(row_idx)
+                time.sleep(0.25)   # stay under Sheets quota
+            except Exception as e:
+                print(f"  [CLEANUP] Error on row {row_idx} in '{sheet_name}': {e}")
+
+        print(f"  [CLEANUP] '{sheet_name}': removed {len(to_delete)} old row(s)")
 
 # ─────────────────────────────────────────────────────────
 # NSE FETCH
@@ -628,7 +724,18 @@ def setup_sheets() -> dict:
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive",
     ]
-    creds_dict = json.loads(os.environ["GOOGLE_CREDS_JSON"])
+    creds_raw = os.environ.get("GOOGLE_CREDS_JSON", "")
+    if not creds_raw:
+        print("  [SHEET] ERROR: GOOGLE_CREDS_JSON not set — sheet writes disabled")
+        return {}
+    if not SHEET_ID:
+        print("  [SHEET] ERROR: GOOGLE_SHEET_ID not set — sheet writes disabled")
+        return {}
+    try:
+        creds_dict = json.loads(creds_raw)
+    except json.JSONDecodeError as e:
+        print(f"  [SHEET] ERROR: Invalid GOOGLE_CREDS_JSON — {e}")
+        return {}
     creds  = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     wb     = client.open_by_key(SHEET_ID)
@@ -645,7 +752,7 @@ def setup_sheets() -> dict:
     ]
     oth_header = [
         "Logged At", "Company", "Symbol",
-        "Title", "NSE Date", "NSE Circular Link", "Screener Link",
+        "Title", "Full Subject / Topic", "NSE Date", "NSE Circular Link", "Screener Link",
     ]
 
     tab_headers = {
@@ -693,11 +800,17 @@ def main():
     announcements = fetch_nse()
     print(f"    Fetched: {len(announcements)} unique records")
 
-    seen     = load_seen()
-    ws_map   = setup_sheets()
-    new_seen = set()
+    seen   = load_seen()
+    ws_map = setup_sheets()
 
-    counts = {k: 0 for k in list(RULES.keys()) + ["others", "excluded"]}
+    # ── 10-day auto-cleanup (runs before new rows are added) ─
+    if ws_map:
+        cleanup_old_rows(ws_map)
+    else:
+        print("  [CLEANUP] Skipped — no sheet connection")
+
+    new_seen  = set()
+    counts    = {k: 0 for k in list(RULES.keys()) + ["others", "excluded"]}
     processed = 0
 
     print("\n[2] Processing…")
@@ -724,8 +837,9 @@ def main():
             screener_link = build_screener_link(ann)
             msg = format_others_message(ann, nse_link, screener_link)
             send_to_channel(CHANNEL_OTHERS, msg)
-            append_to_sheet(ws_map, SHEET_OTHERS, ann, "", None,
-                            nse_link, screener_link, "", False)
+            if ws_map:
+                append_to_sheet(ws_map, SHEET_OTHERS, ann, "", None,
+                                nse_link, screener_link, "", False)
             print(f"  [OTHERS] {ann.get('symbol','?')} — {title[:60]}")
             processed += 1
             continue
@@ -745,9 +859,10 @@ def main():
         for channel_id in channels_to_notify:
             send_to_channel(channel_id, msg)
 
-        for sheet_name in sheets_to_write:
-            append_to_sheet(ws_map, sheet_name, ann, category_label, topic,
-                            nse_link, screener_link, investor_name, is_first)
+        if ws_map:
+            for sheet_name in sheets_to_write:
+                append_to_sheet(ws_map, sheet_name, ann, category_label, topic,
+                                nse_link, screener_link, investor_name, is_first)
 
         for c in matched:
             counts[c] += 1
