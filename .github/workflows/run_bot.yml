@@ -6,7 +6,8 @@ on:
 permissions:
   contents: write              # needed to commit seen_ids.json back to repo
 jobs:
-  run:
+  run-bot:
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
