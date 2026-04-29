@@ -4,7 +4,7 @@ import os
 import time
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ── env vars ──────────────────────────────────────────────
 BOT_TOKEN         = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -37,14 +37,12 @@ RULES = {
     },
     "investors": {
         "keywords": [
-            # meeting / event types
             "investor meet", "investors meet", "analyst meet", "concall",
             "con call", "conference call", "earnings call", "q&a", "q & a",
             "investor day", "investor presentation", "analyst day",
             "road show", "roadshow", "interaction with", "transcript",
             "recording", "webinar", "investor briefing", "management meet",
             "non-deal roadshow", "ndr",
-            # institutional / brokerage names
             "jefferies", "clsa", "citi", "citigroup", "bofa",
             "bank of america", "goldman sachs", "goldman", "jp morgan",
             "jpmorgan", "morgan stanley", "bandhan small cap",
@@ -81,13 +79,11 @@ RULES = {
     },
 }
 
-# Assign channels
 RULES["results"]["channel"]   = CHANNEL_RESULTS
 RULES["investors"]["channel"] = CHANNEL_INVESTORS
 RULES["acqmerger"]["channel"] = CHANNEL_ACQMERGER
 RULES["demerger"]["channel"]  = CHANNEL_DEMERGER
 
-# ── cross-post pairs ──────────────────────────────────────
 CROSS_POST_PAIRS = [
     ("acqmerger", "investors"),
     ("demerger",  "investors"),
@@ -95,27 +91,31 @@ CROSS_POST_PAIRS = [
 
 # ── investors meet sub-category detection ─────────────────
 INVESTOR_SUBCATEGORIES = [
-    ("Transcript",              ["transcript"]),
-    ("Recording",               ["recording", "webcast", "webinar"]),
-    ("Concall",                 ["concall", "con call", "conference call", "earnings call"]),
-    ("Analyst / Broker Meet",   ["analyst meet", "broker meet", "jefferies", "clsa", "citi",
-                                  "citigroup", "bofa", "bank of america", "goldman sachs",
-                                  "goldman", "jp morgan", "jpmorgan", "morgan stanley",
-                                  "bandhan small cap", "hdfc mutual fund", "motilal oswal"]),
-    ("Institutional Meet",      ["institutional", "fund manager", "ndr", "non-deal roadshow",
-                                  "investor briefing", "management meet", "management interaction"]),
-    ("Investor / Analyst Day",  ["investor day", "analyst day", "investor presentation",
-                                  "investor meet", "investors meet", "interaction with"]),
-    ("Roadshow",                ["road show", "roadshow"]),
-    ("Q&A Session",             ["q&a", "q & a"]),
+    ("Transcript",             ["transcript"]),
+    ("Recording",              ["recording", "webcast", "webinar"]),
+    ("Concall",                ["concall", "con call", "conference call", "earnings call"]),
+    ("Analyst / Broker Meet",  ["analyst meet", "broker meet", "jefferies", "clsa", "citi",
+                                 "citigroup", "bofa", "bank of america", "goldman sachs",
+                                 "goldman", "jp morgan", "jpmorgan", "morgan stanley",
+                                 "bandhan small cap", "hdfc mutual fund", "motilal oswal"]),
+    ("Institutional Meet",     ["institutional", "fund manager", "ndr", "non-deal roadshow",
+                                 "investor briefing", "management meet", "management interaction"]),
+    ("Investor / Analyst Day", ["investor day", "analyst day", "investor presentation",
+                                 "investor meet", "investors meet", "interaction with"]),
+    ("Roadshow",               ["road show", "roadshow"]),
+    ("Q&A Session",            ["q&a", "q & a"]),
 ]
 
-def detect_investor_subcategory(text: str) -> str:
-    t = text.lower()
-    for label, kws in INVESTOR_SUBCATEGORIES:
-        if any(kw in t for kw in kws):
-            return label
-    return "Investors Meet"
+# ── known investor / institution names to extract ─────────
+KNOWN_INVESTORS = [
+    "Jefferies", "CLSA", "Citi", "Citigroup", "BofA", "Bank of America",
+    "Goldman Sachs", "JP Morgan", "JPMorgan", "Morgan Stanley",
+    "Bandhan Small Cap", "HDFC Mutual Fund", "Motilal Oswal",
+    "Nomura", "UBS", "Macquarie", "Credit Suisse", "Deutsche Bank",
+    "Bernstein", "HSBC", "Kotak", "Axis Capital", "ICICI Securities",
+    "Edelweiss", "Nuvama", "Emkay", "Ambit", "Systematix",
+    "Prabhudas Lilladher", "Sharekhan", "Angel One", "Nirmal Bang",
+]
 
 # ─────────────────────────────────────────────────────────
 
@@ -151,8 +151,26 @@ def extract_topic(title, body):
         return f"{title} | {body}" if title else body
     return title or None
 
+def detect_investor_subcategory(text: str) -> str:
+    t = text.lower()
+    for label, kws in INVESTOR_SUBCATEGORIES:
+        if any(kw in t for kw in kws):
+            return label
+    return "Investors Meet"
+
+def extract_investor_name(title: str, body: str) -> str:
+    """
+    Scan title + body for known investor/institution names.
+    Returns comma-separated matches, or empty string if none found.
+    """
+    text = (title + " " + body).lower()
+    found = []
+    for name in KNOWN_INVESTORS:
+        if name.lower() in text:
+            found.append(name)
+    return ", ".join(found) if found else ""
+
 def build_category_label(matched_cats, title, body):
-    """Build category label; investors gets specific sub-category."""
     labels = []
     text   = (title + " " + body).lower()
     for cat in matched_cats:
@@ -162,12 +180,53 @@ def build_category_label(matched_cats, title, body):
             labels.append(RULES[cat]["label"])
     return " + ".join(labels)
 
-def format_message(ann, matched_cats, topic, category_label):
+def build_nse_link(ann):
+    """
+    Build the direct NSE circular/attachment URL for this announcement.
+    NSE uses the 'attchmntFile' field for the PDF path.
+    Falls back to the filtered announcements page for that symbol.
+    """
+    attachment = ann.get("attchmntFile", "")
+    symbol     = ann.get("symbol", "")
+
+    if attachment:
+        # attachment paths are like: /Archives/cm/.../.pdf
+        if attachment.startswith("http"):
+            return attachment
+        return f"https://www.nseindia.com{attachment}"
+
+    # Fallback: symbol-specific announcements page
+    if symbol:
+        return (f"https://www.nseindia.com/get-quotes/equity?"
+                f"symbol={symbol}#corporate-announcements")
+
+    return "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
+
+def build_screener_link(ann):
+    """Build Screener.in link for the company's announcements page."""
+    symbol = ann.get("symbol", "")
+    if symbol:
+        return f"https://www.screener.in/company/{symbol}/announcements/"
+    return "https://www.screener.in"
+
+def is_within_24h(ann):
+    """Return True if the announcement date is within the last 24 hours."""
+    date_str = ann.get("an_dt", "")
+    if not date_str:
+        return True  # include if date unknown
+    for fmt in ("%d-%b-%Y %H:%M:%S", "%d-%b-%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            ann_dt = datetime.strptime(date_str.strip(), fmt)
+            return ann_dt >= datetime.now() - timedelta(hours=24)
+        except ValueError:
+            continue
+    return True  # include if unparseable
+
+def format_message(ann, matched_cats, topic, category_label, nse_link, screener_link, investor_name):
     company  = ann.get("sm_name") or ann.get("symbol", "Unknown")
     symbol   = ann.get("symbol", "")
     title    = ann.get("desc", "")
     date_str = ann.get("an_dt", "")
-    link     = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
     emojis   = " ".join(RULES[c]["emoji"] for c in matched_cats)
 
     msg = (
@@ -175,9 +234,15 @@ def format_message(ann, matched_cats, topic, category_label):
         f"🏢 *{company}* (`{symbol}`)\n"
         f"📋 {title}\n"
     )
+    if investor_name:
+        msg += f"👤 *Investor:* {investor_name}\n"
     if topic and topic != title:
         msg += f"📝 {topic}\n"
-    msg += f"📅 {date_str}\n🔗 [View on NSE]({link})"
+    msg += (
+        f"📅 {date_str}\n"
+        f"🔗 [NSE Circular]({nse_link})\n"
+        f"📈 [Screener]({screener_link})"
+    )
     return msg
 
 def send_to_channel(channel_id, msg):
@@ -193,7 +258,8 @@ def send_to_channel(channel_id, msg):
         print(f"  Telegram error [{channel_id}]: {r.text}")
     time.sleep(0.4)
 
-def append_to_sheet(ws_map, sheet_name, ann, category_label, topic):
+def append_to_sheet(ws_map, sheet_name, ann, category_label, topic,
+                    nse_link, screener_link, investor_name):
     ws = ws_map.get(sheet_name)
     if not ws:
         return
@@ -202,10 +268,15 @@ def append_to_sheet(ws_map, sheet_name, ann, category_label, topic):
     title    = ann.get("desc", "")
     date_str = ann.get("an_dt", "")
     now      = datetime.now().strftime("%Y-%m-%d %H:%M")
-    link     = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
-    # Full subject — no truncation at all
     full_topic = topic if topic else title
-    ws.append_row([now, company, symbol, category_label, title, full_topic, date_str, link])
+
+    if sheet_name == SHEET_INVESTORS:
+        # Extra "Investor Name" column for this sheet
+        ws.append_row([now, company, symbol, category_label, title,
+                       full_topic, investor_name, date_str, nse_link, screener_link])
+    else:
+        ws.append_row([now, company, symbol, category_label, title,
+                       full_topic, date_str, nse_link, screener_link])
 
 def fetch_nse():
     headers = {
@@ -242,14 +313,23 @@ def setup_sheets():
     client = gspread.authorize(creds)
     wb     = client.open_by_key(SHEET_ID)
     ws_map = {}
-    header = ["Logged At", "Company", "Symbol", "Category",
-              "Title", "Full Subject / Topic", "NSE Date", "Link"]
+
+    # Standard header for Results, Acq&Merger, Demerger
+    std_header = ["Logged At", "Company", "Symbol", "Category",
+                  "Title", "Full Subject / Topic", "NSE Date", "NSE Circular Link", "Screener Link"]
+
+    # Extended header for Investors Meet (extra Investor Name column)
+    inv_header = ["Logged At", "Company", "Symbol", "Category",
+                  "Title", "Full Subject / Topic", "Investor Name",
+                  "NSE Date", "NSE Circular Link", "Screener Link"]
 
     existing = {ws.title.strip().lower(): ws for ws in wb.worksheets()}
     print(f"  Existing tabs: {list(existing.keys())}")
 
     for tab in [SHEET_RESULTS, SHEET_INVESTORS, SHEET_ACQMERGER, SHEET_DEMERGER]:
-        key = tab.strip().lower()
+        key    = tab.strip().lower()
+        header = inv_header if tab == SHEET_INVESTORS else std_header
+
         if key in existing:
             ws = existing[key]
             if ws.title != tab:
@@ -258,9 +338,9 @@ def setup_sheets():
             else:
                 print(f"  Found tab '{tab}'")
         else:
-            ws = wb.add_worksheet(title=tab, rows=2000, cols=10)
+            ws = wb.add_worksheet(title=tab, rows=2000, cols=12)
             ws.append_row(header)
-            ws.format("A1:H1", {"textFormat": {"bold": True}})
+            ws.format("A1:J1", {"textFormat": {"bold": True}})
             print(f"  Created tab '{tab}'")
         ws_map[tab] = ws
     return ws_map
@@ -270,7 +350,11 @@ def setup_sheets():
 def main():
     print("Fetching NSE announcements...")
     announcements = fetch_nse()
-    print(f"  Got {len(announcements)} records")
+    print(f"  Got {len(announcements)} total records")
+
+    # Filter to last 24 hours only
+    announcements = [a for a in announcements if is_within_24h(a)]
+    print(f"  {len(announcements)} records within last 24 hours")
 
     seen     = load_seen()
     ws_map   = setup_sheets()
@@ -293,7 +377,11 @@ def main():
         topic          = extract_topic(title, body)
         is_cross       = detect_cross_post(matched)
         category_label = build_category_label(matched, title, body)
-        msg            = format_message(ann, matched, topic, category_label)
+        nse_link       = build_nse_link(ann)
+        screener_link  = build_screener_link(ann)
+        investor_name  = extract_investor_name(title, body) if "investors" in matched else ""
+        msg            = format_message(ann, matched, topic, category_label,
+                                        nse_link, screener_link, investor_name)
 
         channels_to_notify = list(dict.fromkeys(RULES[c]["channel"] for c in matched))
         sheets_to_write    = list(dict.fromkeys(RULES[c]["sheet"]   for c in matched))
@@ -302,10 +390,12 @@ def main():
             send_to_channel(channel_id, msg)
 
         for sheet_name in sheets_to_write:
-            append_to_sheet(ws_map, sheet_name, ann, category_label, topic)
+            append_to_sheet(ws_map, sheet_name, ann, category_label, topic,
+                            nse_link, screener_link, investor_name)
 
         cross_note = " [CROSS-POST]" if is_cross else ""
-        print(f"  {cross_note}[{category_label}] {ann.get('symbol', '?')}")
+        inv_note   = f" | Investor: {investor_name}" if investor_name else ""
+        print(f"  {cross_note}[{category_label}]{inv_note} {ann.get('symbol', '?')}")
 
     seen |= new_seen
     save_seen(seen)
